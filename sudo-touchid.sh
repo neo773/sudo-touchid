@@ -3,6 +3,7 @@
 VERSION=0.4
 readable_name='[TouchID for sudo]'
 executable_name='sudo-touchid'
+is_sonoma_or_newer=$(bc -l <<< "$(sw_vers -productVersion) >= 14.0")
 
 usage() {
   cat <<EOF
@@ -22,7 +23,7 @@ EOF
 backup_ext='.bak'
 
 touch_pam='auth       sufficient     pam_tid.so'
-sudo_path='/etc/pam.d/sudo'
+sudo_path=$([[ $is_sonoma_or_newer == 1 ]] && echo '/etc/pam.d/sudo_local' || echo '/etc/pam.d/sudo')
 
 nl=$'\n'
 
@@ -50,17 +51,34 @@ display_backup_info() {
   echo "Created a backup file at $sudo_path$backup_ext"
   echo
 }
+display_sonoma_info() {
+  [[ $is_sonoma_or_newer -eq 0 ]] && return
+  echo "Feel free to delete the $executable_name CLI (if you have it, and unless you'd want to disable TouchID in sudo later). This is possible since macOS Sonoma introduced a way to make actually persisting changes to sudo authorization module."
+  echo
+}
 
 display_sudo_without_touch_pam() {
   grep -v "^$touch_pam$" "$sudo_path"
 }
 
 touch_pam_at_sudo_path_check_exists() {
-  grep -q -e "^$touch_pam$" "$sudo_path"
+  grep -q -e "^$touch_pam$" "$sudo_path" &> /dev/null
 }
 
 touch_pam_at_sudo_path_insert() {
-  sudo sed -E -i "$backup_ext" "1s/^(#.*)$/\1\\${nl}$touch_pam/" "$sudo_path"
+  sudo sed -E -i "$backup_ext" "1s/^(#.*)?$/\1\\${nl}$touch_pam/" "$sudo_path"
+}
+with_sonoma_touch_pam_at_sudo_path_insert() {
+  if [[ $is_sonoma_or_newer == 1 ]]; then
+    if [[ -f "$sudo_path" ]]; then
+      sudo cp "$sudo_path" "$sudo_path$backup_ext"
+      echo "$touch_pam" | sudo tee -a "$sudo_path" > /dev/null
+    else
+      echo "$touch_pam" | sudo tee "$sudo_path" > /dev/null
+    fi
+  else
+    touch_pam_at_sudo_path_insert
+  fi
 }
 
 touch_pam_at_sudo_path_remove() {
@@ -88,9 +106,11 @@ sudo_touchid_enable() {
   if touch_pam_at_sudo_path_check_exists; then
     echo "$readable_name seems to be enabled already"
   else
-    if touch_pam_at_sudo_path_insert; then
+    if with_sonoma_touch_pam_at_sudo_path_insert; then
       display_backup_info
       echo "$readable_name enabled successfully."
+      echo
+      display_sonoma_info
     else
       echo "$readable_name failed to execute"
     fi
